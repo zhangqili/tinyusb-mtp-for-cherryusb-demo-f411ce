@@ -188,6 +188,17 @@ void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
         {
             HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, report[1]|0x02 ? GPIO_PIN_SET : GPIO_PIN_RESET);
         }
+        if (report_len >= 1)
+        {
+            if (report[0] & 0x02) 
+            {
+                HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+            }
+            else 
+            {
+                HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+            }
+        }
     }
 }
 

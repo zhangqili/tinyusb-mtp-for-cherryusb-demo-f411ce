@@ -3,6 +3,12 @@
 
 本文档详细阐述了一个基于 STM32F411CE 微控制器的 USB 媒体传输协议（MTP, Media Transfer Protocol）演示项目的工程架构与操作指南。本项目的核心工作在于将 TinyUSB 协议栈中成熟的 MTP 类驱动模块剥离，并成功移植与适配至 CherryUSB 设备协议栈，从而在不同的协议框架间实现了核心组件的有效复用。
 
+## 演示
+
+![](device.jpg)
+![](deviceprop.jpg)
+![](usbtreeview.jpg)
+
 ## 系统特性
 
 * **底层协议框架**：系统底层依托轻量级且具备高性能特性的 [CherryUSB](https://github.com/cherry-usb/CherryUSB) 设备栈构建。
