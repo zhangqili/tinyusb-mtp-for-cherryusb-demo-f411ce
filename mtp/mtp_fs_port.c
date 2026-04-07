@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 #include "lfs.h"
 #include "stm32f4xx_hal.h"
 
@@ -14,6 +13,11 @@ struct mtp_statfs {
     uint32_t f_blocks;
     uint32_t f_bfree;
 };
+
+typedef struct {
+    uint32_t size;
+    bool is_dir;
+} mtp_stat_t;
 
 #define LFS_FLASH_START_ADDR 0x08020000
 
@@ -255,22 +259,16 @@ struct mtp_dirent *usbd_mtp_readdir(MTP_DIR *d) {
 // 属性读取接口
 //--------------------------------------------------------------------+
 
-int usbd_mtp_stat(const char *file, struct stat *buf) {
+int usbd_mtp_stat(const char *file, mtp_stat_t *buf) {
     struct lfs_info info;
-    if (lfs_stat(&_lfs, file, &info) < 0) {
-        return -1; // 文件不存在
+    int res = lfs_stat(&_lfs, file, &info);
+    
+    if (res >= 0) {
+        buf->size = info.size;
+        buf->is_dir = (info.type == LFS_TYPE_DIR);
+        return 0;
     }
-    memset(buf, 0, sizeof(struct stat));
-    buf->st_size = info.size;
-    
-    // 如果没有 sys/stat.h 中的宏，可以用硬编码的常用值 S_IFDIR=0x4000, S_IFREG=0x8000
-    #ifndef S_IFDIR
-    #define S_IFDIR  0040000
-    #define S_IFREG  0100000
-    #endif
-    
-    buf->st_mode = (info.type == LFS_TYPE_DIR) ? S_IFDIR : S_IFREG;
-    return 0;
+    return -1;
 }
 
 int usbd_mtp_statfs(const char *path, struct mtp_statfs *buf) {

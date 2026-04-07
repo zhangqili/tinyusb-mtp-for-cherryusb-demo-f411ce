@@ -65,9 +65,7 @@ static void MX_USART1_UART_Init(void);
 #if defined (__ARMCC_VERSION) /* ARM Compiler */
 int fputc(int ch, FILE *f)
 {
-  while ((USART1->ISR & USART_ISR_TXE) == 0)
-      ;
-  USART1->TDR = ch;
+  HAL_UART_Transmit(&huart1,(uint8_t*)&ch,1,HAL_MAX_DELAY);
   return ch;
 }
 #elif defined ( __GNUC__ ) && !defined (__CC_ARM) /* GNU Compiler */

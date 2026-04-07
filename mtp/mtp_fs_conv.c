@@ -6,7 +6,11 @@
 #include "mtp_device.h"
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
+
+typedef struct {
+    uint32_t size;
+    bool is_dir;
+} mtp_stat_t;
 
 static inline size_t board_usb_get_serial(uint16_t desc_str[], size_t max_chars) {
     const char* serial = SERIAL_NUMBER;
@@ -68,16 +72,6 @@ static void mtp_container_add_utf8_string(mtp_container_info_t* container, const
     (void) mtp_container_add_string(container, utf16_buf); // 调用 TinyUSB 原始函数发送宽字符
 }
 
-#ifndef S_IFMT
-#define S_IFMT 0170000
-#endif
-#ifndef S_IFDIR
-#define S_IFDIR 0040000
-#endif
-#ifndef S_ISDIR
-#define S_ISDIR(mode)  (((mode) & S_IFMT) == S_IFDIR)
-#endif
-
 typedef void MTP_DIR;
 struct mtp_dirent {
     char d_name[256];
@@ -99,7 +93,7 @@ extern MTP_DIR *usbd_mtp_opendir(const char *name);
 extern int usbd_mtp_closedir(MTP_DIR *d);
 extern struct mtp_dirent *usbd_mtp_readdir(MTP_DIR *d);
 extern int usbd_mtp_statfs(const char *path, struct mtp_statfs *buf);
-extern int usbd_mtp_stat(const char *file, struct stat *buf);
+extern int usbd_mtp_stat(const char *file, mtp_stat_t *buf);
 extern int usbd_mtp_open(const char *path, uint8_t mode);
 extern int usbd_mtp_close(int fd);
 extern int usbd_mtp_read(int fd, void *buf, size_t len);
@@ -191,7 +185,7 @@ static void scan_single_dir(const char* base_path, uint32_t parent_handle) {
     if (!d) return;
 
     struct mtp_dirent *ent;
-    static struct stat st;
+    static mtp_stat_t st;
 
     while ((ent = usbd_mtp_readdir(d)) != NULL) {
         if (ent->d_name[0] == '.') {
@@ -210,8 +204,8 @@ static void scan_single_dir(const char* base_path, uint32_t parent_handle) {
         build_path_from_string(base_path, ent->d_name, obj->path, sizeof(obj->path));
 
         if (usbd_mtp_stat(obj->path, &st) == 0) {
-            obj->size = st.st_size;
-            obj->is_dir = S_ISDIR(st.st_mode);
+            obj->size = st.size;
+            obj->is_dir = st.is_dir;
         }
 
         if (obj->is_dir) {
