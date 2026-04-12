@@ -6,11 +6,7 @@
 #include "mtp_device.h"
 #include <stdio.h>
 #include <string.h>
-
-typedef struct {
-    uint32_t size;
-    bool is_dir;
-} mtp_stat_t;
+#include "mtp_fs_port.h"
 
 static inline size_t board_usb_get_serial(uint16_t desc_str[], size_t max_chars) {
     const char* serial = SERIAL_NUMBER;
@@ -72,41 +68,15 @@ static void mtp_container_add_utf8_string(mtp_container_info_t* container, const
     (void) mtp_container_add_string(container, utf16_buf); // 调用 TinyUSB 原始函数发送宽字符
 }
 
-typedef void MTP_DIR;
-struct mtp_dirent {
-    char d_name[256];
-    uint8_t d_type;
-};
-struct mtp_statfs {
-    uint32_t f_bsize;
-    uint32_t f_blocks;
-    uint32_t f_bfree;
-};
-
-extern int usbd_mtp_notify_object_add(const char *path);
-extern int usbd_mtp_notify_object_remove(const char *path);
-extern const char *usbd_mtp_fs_root_path(void);
-extern const char *usbd_mtp_fs_description(void);
-extern int usbd_mtp_mkdir(const char *path);
-extern int usbd_mtp_rmdir(const char *path);
-extern MTP_DIR *usbd_mtp_opendir(const char *name);
-extern int usbd_mtp_closedir(MTP_DIR *d);
-extern struct mtp_dirent *usbd_mtp_readdir(MTP_DIR *d);
-extern int usbd_mtp_statfs(const char *path, struct mtp_statfs *buf);
-extern int usbd_mtp_stat(const char *file, mtp_stat_t *buf);
-extern int usbd_mtp_open(const char *path, uint8_t mode);
-extern int usbd_mtp_close(int fd);
-extern int usbd_mtp_read(int fd, void *buf, size_t len);
-extern int usbd_mtp_write(int fd, const void *buf, size_t len);
-extern int usbd_mtp_unlink(const char *path);
-extern int usbd_mtp_rename(const char *oldpath, const char *newpath);
-extern int usbd_mtp_format_store(void);
-extern void usbd_dfu_reset(void);
-
 enum { SUPPORTED_STORAGE_ID = 0x00010001u };
 
-#define MAX_MTP_HANDLES 32
-#define MAX_PATH_LEN    64
+#ifndef MTP_MAX_HANDLES
+#define MTP_MAX_HANDLES 32
+#endif
+#ifndef MTP_MAX_PATH_LEN
+#define MTP_MAX_PATH_LEN 255
+#endif
+
 static uint32_t pending_event_handle = 0;
 static uint16_t pending_event_code = 0;
 static void notify_host_object_event(uint32_t handle, uint16_t event_code) {
@@ -134,17 +104,17 @@ typedef struct {
     uint16_t association_type;
     uint32_t size;
     char name[64];
-    char path[MAX_PATH_LEN];
+    char path[MTP_MAX_PATH_LEN];
     bool scanned;
 } mtp_obj_t;
 
-static mtp_obj_t handle_map[MAX_MTP_HANDLES];
+static mtp_obj_t handle_map[MTP_MAX_HANDLES];
 static bool is_session_opened = false;
 static uint32_t send_obj_handle = 0;
 static int active_fd = -1;
 
 static uint32_t allocate_handle(void) {
-    for (int i = 0; i < MAX_MTP_HANDLES; i++) {
+    for (int i = 0; i < MTP_MAX_HANDLES; i++) {
         if (!handle_map[i].used) {
             handle_map[i].used = true;
             return i + 1; 
@@ -154,7 +124,7 @@ static uint32_t allocate_handle(void) {
 }
 
 static mtp_obj_t* get_obj(uint32_t handle) {
-    if (handle == 0 || handle > MAX_MTP_HANDLES) return NULL;
+    if (handle == 0 || handle > MTP_MAX_HANDLES) return NULL;
     if (!handle_map[handle - 1].used) return NULL;
     return &handle_map[handle - 1];
 }
@@ -222,7 +192,7 @@ static void scan_all_directories(void) {
     bool more_to_scan = true;
     while (more_to_scan) {
         more_to_scan = false;
-        for (int i = 0; i < MAX_MTP_HANDLES; i++) {
+        for (int i = 0; i < MTP_MAX_HANDLES; i++) {
             if (handle_map[i].used && handle_map[i].is_dir && !handle_map[i].scanned) {
                 handle_map[i].scanned = true; 
                 scan_single_dir(handle_map[i].path, handle_map[i].handle); 
@@ -335,20 +305,12 @@ static int32_t fs_get_object_handles(tud_mtp_cb_data_t* cb_data) {
         return MTP_RESP_INVALID_STORAGE_ID;
     }
 
-    static uint32_t handles[MAX_MTP_HANDLES];
+    static uint32_t handles[MTP_MAX_HANDLES];
     uint32_t count = 0;
 
-    for (uint32_t i = 0; i < MAX_MTP_HANDLES; i++) {
+    for (uint32_t i = 0; i < MTP_MAX_HANDLES; i++) {
         if (handle_map[i].used) {
             bool parent_match = false;
-            
-            // ====================================================================
-            // 【终极必杀技：彻底阻断操作系统的异步竞态 Bug】
-            // 无论是查询 0x00000000 (根目录)，还是 0xFFFFFFFF (全盘所有文件)，
-            // 我们都强制将其拦截，**只返回根目录的内容 (parent == 0)**！
-            // 电脑收到后会以为硬盘里只有 etc, usr, var，便不会引发乱放问题。
-            // 当用户点击 etc 时，电脑才会再单独来要 etc 里面的东西，强迫它同步加载！
-            // ====================================================================
             if (parent_handle == 0xFFFFFFFFu || parent_handle == 0x00000000u) {
                 parent_match = (handle_map[i].parent == 0);
             } else {
@@ -493,22 +455,16 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
 
         memset(f->name, 0, sizeof(f->name)); // 清空文件名残留
 
-        // =========================================================
-        // 【核心抢救区】彻底解决非对齐访问死机和数组越界 Bug
-        // =========================================================
         if (payload_len > 52) {
             uint8_t* str_buf = payload + 52; 
             uint8_t char_count = str_buf[0]; 
             uint8_t* utf16_bytes = str_buf + 1;
-            
-            // 安全限制：防止 MTP 协议报告的字符数大于实际发送的数据包长度
+
             uint32_t max_chars = (payload_len - 53) / 2;
             if (char_count > max_chars) char_count = max_chars;
 
-            // 一行代码调用转换！
             utf16le_to_utf8(utf16_bytes, char_count, f->name, sizeof(f->name));
         } else {
-            // 如果主机没发文件名，给个默认名防止后续拼接崩溃
             strcpy(f->name, "New Folder"); 
         }
         // =========================================================
@@ -547,7 +503,6 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
         } else {
             usbd_mtp_close(active_fd);
             active_fd = -1;
-            // 【修复 3】：文件写入完毕，立刻向 Linux 发送更新事件
             queue_pending_event(f->handle, MTP_EVENT_OBJECT_ADDED);
         }
     }
@@ -565,13 +520,12 @@ static int32_t fs_delete_object(tud_mtp_cb_data_t* cb_data) {
     } else {
         usbd_mtp_unlink(f->path);
     }
-    // 【修复 3】：通知电脑立刻隐藏被删掉的文件
     queue_pending_event(f->handle, MTP_EVENT_OBJECT_REMOVED);
     f->used = false; 
     return MTP_RESP_OK;
 }
 static void delete_children_handles(uint32_t parent_handle) {
-    for (int i = 0; i < MAX_MTP_HANDLES; i++) {
+    for (int i = 0; i < MTP_MAX_HANDLES; i++) {
         if (handle_map[i].used && handle_map[i].parent == parent_handle) {
             handle_map[i].used = false;
             if (handle_map[i].is_dir) delete_children_handles(handle_map[i].handle);
@@ -586,15 +540,13 @@ static int32_t fs_move_object(tud_mtp_cb_data_t* cb_data) {
     mtp_obj_t* f = get_obj(obj_handle);
     if (!f) return MTP_RESP_INVALID_OBJECT_HANDLE;
 
-    char new_path[MAX_PATH_LEN];
+    char new_path[MTP_MAX_PATH_LEN];
     if (!is_valid_parent(parent_handle))
         return MTP_RESP_INVALID_PARENT_OBJECT;
     build_path_from_handle(parent_handle, f->name, new_path, sizeof(new_path));
 
-    // 硬件层直接重命名，瞬间完成！
     usbd_mtp_rename(f->path, new_path); 
     
-    // 更新内存元数据
     strncpy(f->path, new_path, sizeof(f->path));
     f->parent = parent_handle;
 
@@ -616,7 +568,7 @@ static int32_t fs_copy_object(tud_mtp_cb_data_t* cb_data) {
     // 为了单片机安全，暂不支持在 MTP 直接拖拽复制整个文件夹
     if (src->is_dir) return MTP_RESP_OPERATION_NOT_SUPPORTED;
 
-    char new_path[MAX_PATH_LEN];
+    char new_path[MTP_MAX_PATH_LEN];
     if (!is_valid_parent(parent_handle))
         return MTP_RESP_INVALID_PARENT_OBJECT;
     build_path_from_handle(parent_handle, src->name, new_path, sizeof(new_path));
@@ -700,14 +652,11 @@ static int32_t fs_set_object_prop_value(tud_mtp_cb_data_t* cb_data) {
             uint8_t* str_buf = io_container->payload;
             uint32_t payload_len = io_container->payload_bytes;
             
-            // 【安全防线】防止空包
+            // 防止空包
             if (payload_len < 1) return MTP_RESP_GENERAL_ERROR;
 
             uint8_t char_count = str_buf[0];
             
-            // =========================================================
-            // 【致命修复区】废除奇数地址指针强转，按字节安全拼装
-            // =========================================================
             uint8_t* utf16_bytes = str_buf + 1;
             
             char new_name[64] = {0};
@@ -715,7 +664,7 @@ static int32_t fs_set_object_prop_value(tud_mtp_cb_data_t* cb_data) {
             new_name[63] = '\0';
             // =========================================================
             
-            char new_path[MAX_PATH_LEN];
+            char new_path[MTP_MAX_PATH_LEN];
             build_path_from_handle(f->parent, new_name, new_path, sizeof(new_path));
             
             usbd_mtp_rename(f->path, new_path); 
@@ -832,12 +781,7 @@ static int32_t fs_reset_device(tud_mtp_cb_data_t* cb_data) {
     // 3. 彻底重置 MTP 会话状态和内存映射
     is_session_opened = false;
     memset(handle_map, 0, sizeof(handle_map));
-
-    // =========================================================
-    // 【可选】如果你希望收到这个命令时，整个键盘直接断电重启
-    // 请取消注释下面这行代码（适用于 ARM Cortex-M 架构）：
-    // =========================================================
-    usbd_dfu_reset();
+    //usbd_mtp_device_reset();
 
     // 如果不硬重启，就老老实实回复 OK，让主机自己发 OpenSession 重新连接
     return MTP_RESP_OK;

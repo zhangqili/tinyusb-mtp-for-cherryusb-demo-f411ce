@@ -1,23 +1,8 @@
 #include <stdio.h>
 #include <string.h>
+#include "mtp_fs_port.h"
 #include "lfs.h"
 #include "stm32f4xx_hal.h"
-
-typedef void MTP_DIR;
-struct mtp_dirent {
-    char d_name[256];
-    uint8_t d_type;
-};
-struct mtp_statfs {
-    uint32_t f_bsize;
-    uint32_t f_blocks;
-    uint32_t f_bfree;
-};
-
-typedef struct {
-    uint32_t size;
-    bool is_dir;
-} mtp_stat_t;
 
 #define LFS_FLASH_START_ADDR 0x08020000
 
@@ -124,6 +109,7 @@ static int lfs_flash_erase(const struct lfs_config *c, lfs_block_t block)
     }
 
     HAL_FLASH_Lock();
+    __enable_irq();
 
     return LFS_ERR_OK;
 }
